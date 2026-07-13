@@ -1,0 +1,391 @@
+# Design Patterns — Notes
+
+For each pattern know: **problem / how / where used.** Skip UML.
+
+## The 3 families
+
+| Family | Answers | Patterns |
+|--------|---------|----------|
+| **Creational** | How to **create** objects | Singleton, Factory, Builder |
+| **Structural** | How to **compose** objects | Adapter, Decorator, Facade |
+| **Behavioral** | How objects **talk** | Observer, Strategy |
+
+---
+
+# CREATIONAL
+
+## 1. Singleton
+
+**Problem (2 things for the same instance):**
+1. Ensure **exactly one instance** of a class — controls access to a **shared resource** (DB, config, cache).
+2. Provide a **safe global access point** — reachable from anywhere, but can't be overwritten.
+
+**How:** private constructor + one static instance + static `getInstance()`.
+> Impossible with a normal constructor — `new` always returns a fresh object.
+
+**Where:** DB connection pool, config, logger, cache.
+
+```java
+class DatabaseConnection {
+    private static DatabaseConnection instance;
+    private DatabaseConnection() { /* open real DB connection */ }
+
+    public static DatabaseConnection getInstance() {
+        if (instance == null) instance = new DatabaseConnection();
+        return instance;                          // always same object
+    }
+    public void query(String sql) { }
+}
+```
+
+### Thread-safety (the follow-up they LOVE)
+Basic version is **not** thread-safe: two threads can pass `instance == null` together → two instances. Three fixes:
+
+**Option 1 — `synchronized` method** (simple, but locks every call → slow)
+```java
+public static synchronized DatabaseConnection getInstance() {
+    if (instance == null) instance = new DatabaseConnection();
+    return instance;
+}
+```
+
+**Option 2 — Double-Checked Locking** (fast, locks only on first creation)
+```java
+private static volatile DatabaseConnection instance;    // volatile = every thread sees latest value
+
+public static DatabaseConnection getInstance() {
+    if (instance == null) {                             // check 1: no lock, fast
+        synchronized (DatabaseConnection.class) {
+            if (instance == null) {                     // check 2: safety inside lock
+                instance = new DatabaseConnection();
+            }
+        }
+    }
+    return instance;
+}
+```
+
+**Option 3 — Enum Singleton** ⭐ (best in Java — thread-safe by design)
+```java
+enum DatabaseConnection {
+    INSTANCE;
+    public void query(String sql) { }
+}
+// usage
+DatabaseConnection.INSTANCE.query("SELECT * FROM users");
+```
+
+| Option | Speed | Complexity |
+|--------|-------|------------|
+| synchronized method | 🐢 slow (locks every call) | simple |
+| double-checked locking | 🐇 fast | complex + needs `volatile` |
+| enum | ⚡ fastest | shortest + safest |
+
+### Watch-outs
+- Hard to unit-test (global state, hard to mock).
+- Hides dependencies.
+- Breaks **SRP** slightly (manages own instance + does real job). Overuse → anti-pattern.
+
+**How exactly does it break SRP?** The class does 2 jobs = 2 reasons to change:
+1. **Lifecycle** — managing the single instance (`instance`, `getInstance()`, thread-safety).
+2. **Real work** — the actual business logic (`query()`, `connect()`).
+
+Change the singleton strategy (e.g. synchronized → enum) OR change how queries work → both edit the same class.
+
+> 💡 Fix: separate instance creation into a **Factory** (next pattern). Then one class handles the real work, another handles creation.
+
+### Interview answer (polished)
+
+"الـ **Singleton** بيحل مشكلة إني محتاجة **only one instance** من class معيّن، وبيديني **global access point** آمن ليه — أي جزء في الـ app بيشوف **نفس الـ instance**.
+
+مثال: الـ **DB connection**. دي **shared resource**، مفيش داعي أعمل مليون connection.
+
+الـ follow-up المشهور: **هل هو thread-safe؟** لأ، مش by default. لو اتنين thread نادوا `getInstance()` في نفس اللحظة والـ instance لسه `null`، الاتنين هيعدّوا الشيك ويعملوا **instance جديد** كل واحد → كسر الـ Singleton.
+
+الحل: أعمل **lock** في `getInstance()`. عندي **3 options**:
+
+1. **`synchronized` على الميثود** — أبسط حل، بس بيقفل **كل مرة** الميثود بتتنادى حتى بعد ما الـ instance اتعمل → **بطيء**.
+2. **Double-checked locking مع `volatile`** — بشيك مرتين، مرة **بره القفل** (سريع) ومرة **جوّاه** (أمان). كده بقفل **بس أول مرة**، بعد كده كل الاستدعاءات تعدّي بدون قفل. الـ **`volatile`** مهمة عشان كل الـ threads يشوفوا آخر قيمة من الـ **memory** مش من الـ **CPU cache**.
+3. **Enum Singleton** — الأحسن في Java. **thread-safe by design** من غير ما أكتب أي قفل، ومحمي من **reflection** و **serialization** tricks."
+
+**Bonus lines (لو دقّق):**
+- **إمتى أختار كل واحدة؟** →
+    - لو الميثود بتتنادى شوية → `synchronized` بسيط ومكفّي.
+    - لو كتير → double-checked.
+    - لو Java → **enum أحسن**.
+- **عيوب Singleton عمومًا؟** →
+    - صعب في **unit-testing**.
+    - بيخبّي الـ **dependencies**.
+    - وبيكسر **SRP** شوية (بيدير نفسه + بيشتغل).
+
+---
+
+## 2. Factory Method
+
+**Problem:** class معيّن بيبقى مسؤول عن **إنشاء objects** من كذا نوع (`new Visa()`, `new MasterCard()`...) → **بيكسر SRP + OCP**.
+
+**Idea:** **encapsulate object creation logic** in one class. أي جزء محتاج object → يسأل الـ factory بدل ما يعمل `new` بنفسه.
+
+**Where used:** payment methods, notification channels (email/SMS/push), shape drawing, DB drivers.
+
+### Code (payment example)
+```java
+enum CardType { VISA, MASTER_CARD, AMERICAN_EXPRESS }
+
+interface PaymentMethod {
+    void authorize();
+    void startMoneyTransfer();
+}
+
+class Visa implements PaymentMethod {
+    public void authorize() { }
+    public void startMoneyTransfer() { }
+}
+class MasterCard implements PaymentMethod { /* ... */ }
+class AmericanExpress implements PaymentMethod { /* ... */ }
+
+// ⭐ Factory — one class, one job: create PaymentMethod
+class PaymentMethodFactory {
+    public PaymentMethod createPaymentMethod(CardType type) {
+        switch (type) {
+            case VISA:              return new Visa();
+            case MASTER_CARD:       return new MasterCard();
+            case AMERICAN_EXPRESS:  return new AmericanExpress();
+            default: throw new IllegalArgumentException("Unknown: " + type);
+        }
+    }
+}
+
+// PaymentProcessor doesn't know concrete classes — only the interface
+class PaymentProcessor {
+    private PaymentMethodFactory factory;
+    public PaymentProcessor(PaymentMethodFactory factory) { this.factory = factory; }
+
+    public void process(CardType type) {
+        PaymentMethod payment = factory.createPaymentMethod(type);
+        payment.authorize();
+        payment.startMoneyTransfer();
+    }
+}
+```
+
+### SOLID keywords it satisfies
+- **SRP** — `PaymentProcessor` does processing, factory does creation.
+- **OCP** — new payment method = new class + one line in factory. `PaymentProcessor` never touched.
+- **DIP** — `PaymentProcessor` depends on `PaymentMethod` interface, not concrete classes.
+
+### 💡 Fixes the Singleton SRP issue
+Singleton mixes **lifecycle** (managing instance) + **real work** (queries). Factory splits them:
+```java
+class DatabaseConnection {                          // ← real work only
+    public void query(String sql) { }
+}
+class DatabaseConnectionFactory {                   // ← creation only
+    private static DatabaseConnection instance;
+    public static DatabaseConnection getInstance() {
+        if (instance == null) instance = new DatabaseConnection();
+        return instance;
+    }
+}
+```
+Now each class has **one reason to change** → SRP restored.
+
+### Honest note (say if pressed)
+Factory doesn't fully close OCP — you still edit it when adding a new type. But it **contains** the change in one small class whose only job is creation. For 100% closed → use a **registry** or **reflection**.
+
+### Interview answer
+"الـ **Factory** بـ**encapsulate object creation logic** في class واحد — بدل ما كل جزء في الكود يعمل `new` بنفسه، بيرجع للـ factory.
+
+مثال: عندي `PaymentProcessor` بيعمل process على `PaymentMethod` interface، وعندي concrete classes زي **Visa, MasterCard, PayPal**. بدل ما `PaymentProcessor` يعرف كل الأنواع ويعمل `if/else`، بيسأل الـ **`PaymentMethodFactory`** بالـ `cardType` وترجّعله الـ **PaymentMethod instance جاهزة**.
+
+بحل مشكلتين:
+1. **SRP** — `PaymentProcessor` بس بيـ**process**، مش بيـ**create**.
+2. **OCP** — payment method جديدة؟ concrete class جديد + سطر في الـ factory. **`PaymentProcessor` ما بيتلمسش**.
+
+Honest note: الـ factory نفسه لسه بيتعدّل لما أضيف نوع، فمش OCP مثالي 100% — بس بيركّز التغيير في مكان مسؤوليته الوحيدة الإنشاء. لو محتاجة أقفله كمان → **registry** أو **reflection**."
+
+### Bonus: Abstract Factory (the follow-up)
+- **Factory Method:** creates **one object** of a type (Visa vs MasterCard — all `PaymentMethod`).
+- **Abstract Factory:** creates a **whole family of related objects** that must stay consistent together.
+
+**When to use:** you have multiple **families**, and objects inside one family must not be mixed with another (e.g. Stripe stack ≠ PayPal stack).
+
+```java
+interface Card {} interface Validator {} interface Gateway {}
+
+// Stripe family
+class StripeCard implements Card {}
+class StripeValidator implements Validator {}
+class StripeGateway implements Gateway {}
+// PayPal family — parallel structure
+class PayPalCard implements Card {}
+class PayPalValidator implements Validator {}
+class PayPalGateway implements Gateway {}
+
+// ⭐ Abstract Factory — creates the whole family
+interface PaymentFactory {
+    Card createCard();
+    Validator createValidator();
+    Gateway createGateway();
+}
+class StripeFactory implements PaymentFactory {
+    public Card createCard()           { return new StripeCard(); }
+    public Validator createValidator() { return new StripeValidator(); }
+    public Gateway createGateway()     { return new StripeGateway(); }
+}
+class PayPalFactory implements PaymentFactory { /* PayPal versions */ }
+
+// pick the family once → all pieces stay consistent, can't mix by accident
+PaymentFactory factory = new StripeFactory();
+```
+
+**Real-world:** UI themes (Windows/Mac families), DB drivers (MySQL/Postgres families), cloud SDKs (AWS/Azure).
+
+**Interview line:** "Factory Method creates **one object**; Abstract Factory creates a **family of related objects** that must stay consistent together — like UI themes or DB drivers."
+
+---
+
+## 3. Builder
+
+**Problem:** class with **many optional fields**. Two bad options:
+- **Telescoping constructors** — one constructor per combination → explodes fast.
+- **Setters** — object stays **half-built** after `new` (invalid state, easy to forget a required field).
+
+**Idea:** helper class builds the object step-by-step via **method chaining** (**fluent interface**), then `build()` returns the final, complete, immutable object.
+
+**Where used:** `StringBuilder`, `HttpRequest.Builder`, SQL query builders, Lombok's `@Builder`.
+
+### Code
+```java
+class Pizza {
+    private final String dough;         // final → immutable after build
+    private final String sauce;
+    private final String cheese;
+    private final boolean pepperoni;
+    private final boolean mushrooms;
+
+    private Pizza(Builder b) {          // private → only Builder can create
+        this.dough     = b.dough;
+        this.sauce     = b.sauce;
+        this.cheese    = b.cheese;
+        this.pepperoni = b.pepperoni;
+        this.mushrooms = b.mushrooms;
+    }
+
+    public static class Builder {
+        private String dough;           // required
+        private String sauce;           // required
+        private String cheese;          // optional
+        private boolean pepperoni;      // optional
+        private boolean mushrooms;      // optional
+
+        public Builder(String dough, String sauce) {   // required in constructor
+            this.dough = dough;
+            this.sauce = sauce;
+        }
+
+        public Builder cheese(String cheese) { this.cheese = cheese; return this; }
+        public Builder pepperoni(boolean v)  { this.pepperoni = v;   return this; }
+        public Builder mushrooms(boolean v)  { this.mushrooms = v;   return this; }
+
+        public Pizza build() {
+            // validation here — object never leaves incomplete
+            return new Pizza(this);
+        }
+    }
+}
+
+// usage — reads like English
+Pizza p = new Pizza.Builder("thin", "tomato")
+                    .cheese("mozzarella")
+                    .pepperoni(true)
+                    .build();
+```
+
+### Benefits (keywords)
+| Benefit | How |
+|---------|-----|
+| **Readability** | reads like a sentence |
+| **Immutable object** | fields `final`, nothing changes after `build()` |
+| **No constructor overloading** | handles optional fields cleanly |
+| **Validation in `build()`** | object never exists in an invalid state |
+
+### Builder vs Factory
+| Factory | Builder |
+|---------|---------|
+| Chooses **which class** to create (variants) | Builds **one complex object** step-by-step |
+| Returns object in **one step** | Returns after **many steps** + `build()` |
+| For **variants of a type** | For **objects with many optional fields** |
+
+### Interview answer
+"الـ **Builder** بيشتغل لما عندي class فيه **كتير optional fields**. بدل ما أعمل **كذا نسخة من الـ constructor** أو أستخدم **setters** (اللي بيخلوا الـ object ناقص لحد ما تخلصي)، الـ Builder بيبنيلي الـ object step-by-step عبر **method chaining** (**fluent interface**)، وفي الآخر بينده `build()` بيرجّعلي الـ object **جاهز ومتناسق ومحصّن (immutable)**.
+
+مثال: `new Pizza.Builder("thin", "tomato").cheese("mozzarella").pepperoni(true).build()`. أمثلة معروفة في Java: **`StringBuilder`**، **`HttpRequest.Builder`**، **Lombok's `@Builder`**."
+
+---
+
+# BEHAVIORAL
+
+> **Behavioral patterns** focus on **how objects behave and communicate** — which algorithm to use, how they notify each other, how to distribute responsibilities. (Creational = how to make. Structural = how to compose. Behavioral = how they talk / act.)
+
+## 4. Strategy
+
+**Problem:** class has **multiple algorithms** to do the same thing, and the choice happens at **runtime**. Putting them all inside one class with `if/else` breaks **SRP + OCP**.
+
+**Idea:** put each algorithm in its own class implementing a **common interface**. The **context** depends on the interface and swaps algorithms at runtime.
+
+**Where used:** payment methods, pricing tiers (Regular / VIP / Seasonal), sorting (`Comparator`), compression (ZIP/RAR/GZIP), authentication (password / OAuth / biometric), shipping calculators.
+
+### Code (shipping example)
+```java
+// 1. Strategy interface
+interface ShippingStrategy {
+    double calculate(Order order);
+}
+
+// 2. Concrete strategies — each algorithm isolated
+class StandardShipping implements ShippingStrategy {
+    public double calculate(Order order) { return order.weight * 2; }
+}
+class ExpressShipping implements ShippingStrategy {
+    public double calculate(Order order) { return order.weight * 5 + 10; }
+}
+class SameDayShipping implements ShippingStrategy {
+    public double calculate(Order order) { return order.weight * 10 + 30; }
+}
+
+// 3. Context — uses a strategy without knowing its details
+class ShippingCalculator {
+    private ShippingStrategy strategy;
+
+    public ShippingCalculator(ShippingStrategy strategy) { this.strategy = strategy; }
+    public void setStrategy(ShippingStrategy s) { this.strategy = s; }   // swap at runtime
+
+    public double calculate(Order order) { return strategy.calculate(order); }
+}
+
+// usage — pick algorithm at runtime
+ShippingCalculator calc = new ShippingCalculator(new StandardShipping());
+calc.setStrategy(new ExpressShipping());
+```
+
+### SOLID keywords it satisfies
+- **OCP** ⭐ — new algorithm = new class. Context never touched. Strategy is **the classic OCP example**.
+- **SRP** — each algorithm is one class with one job.
+- **DIP** — context depends on the interface, not concrete classes.
+
+### Strategy vs Factory
+| Factory | Strategy |
+|---------|----------|
+| Handles **creation** of the object | Handles **use** of the object |
+| Returns object, then done | Object stays and gets used by the context |
+| Solves **which class to create** | Solves **which algorithm to use** |
+
+They **complement** each other — a Factory can create the Strategy and inject it into the Context.
+
+### Interview answer
+"الـ **Strategy** بيحل مشكلة إن class فيه **كذا algorithm** لعمل نفس الحاجة، والاختيار في الـ **runtime**. بدل ما أعمل `if/else` كبير جوّه الـ class (**كسر SRP + OCP**)، بحط كل algorithm في **class مستقل بيـ implement نفس الـ interface**، والـ context بيعتمد على الـ interface ويقدر يبدّل بينهم في الـ runtime.
+
+مثال: `ShippingCalculator` عنده Standard, Express, SameDay strategies. algorithm جديد؟ **class جديد بس، الـ Calculator ما بيتلمسش**. ده **التطبيق الكلاسيكي لـ Open/Closed**."
+
+---
