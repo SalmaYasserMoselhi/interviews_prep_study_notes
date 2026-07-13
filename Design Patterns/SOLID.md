@@ -12,7 +12,7 @@
 
 ---
 
-## Interview one-liners (بالعربي + English keywords)
+## Interview one-liners
 
 - **S — Single Responsibility:** "الـ class يكون ليه **only one reason to change**، يعني ميكونش فيه أكتر من functionality. لو عدّلت في واحدة، بنسبة كبيرة الباقي هيتكسر وهبقى عرضة لـ **bugs**."
 
