@@ -422,29 +422,91 @@ WHERE id=1 AND version=5;   -- 0 rows affected → conflict → retry
 - Benefits: less duplication, smaller size, consistent data, easier updates.
 
 ### Q2. What anomalies does it fix?
-- **Insert anomaly** — can't add data because other unrelated data is missing (e.g., can't add a course with no enrolled student if they're in the same table).
-- **Update anomaly** — must update the same fact in many rows; miss one → inconsistency.
-- **Delete anomaly** — deleting a row loses unrelated data too.
+All 3 come from **duplication** — same fact stored in many rows.
 
-### Q3. Explain 1NF → 2NF → 3NF. ⭐⭐
-- **1NF** — atomic values only. No multiple values in one cell (no `math, science` in one column), no repeating groups.
-- **2NF** — 1NF **+ no partial dependency**: every non-key column depends on the **whole** composite primary key, not just part of it.
-- **3NF** — 2NF **+ no transitive dependency**: non-key columns depend **only on the key**, not on another non-key column.
-  - *Example violation:* table with `zip_code` and `city` — `city` depends on `zip_code` (a non-key) → move it to its own table.
+**Bad table (students + courses in one):**
+```
+student_id | name  | email          | course
+1          | Sara  | sara@x.com     | Math
+1          | Sara  | sara@x.com     | Physics    ← Sara duplicated
+1          | Sara  | sara@x.com     | Chemistry
+2          | Ansh  | ansh@x.com     | Math
+```
 
-**Memory line:** 1NF — atomic. 2NF — no partial dependency on the key. 3NF — no dependency between non-key columns. Or the classic: *the key, the whole key, and nothing but the key.*
+**1. Insert anomaly** — can't add data because other data is missing.
+```
+Add student Karim (no course yet):
+INSERT VALUES (3, 'Karim', 'k@x.com', ???)   ← no course → can't insert!
+```
 
-### Q4. What is BCNF?
-- A **stricter 3NF**: every determinant (column that determines another) must be a **candidate key**. Handles edge cases 3NF misses.
+**2. Update anomaly** — change email in many rows; miss one → contradiction.
+```
+Update Sara's email:
+row 1: sara.new@x.com  ✅
+row 2: sara.new@x.com  ✅
+row 3: sara@x.com      ❌ forgot → two truths, DB stays silent
+```
 
-### Q5. When would you denormalize?
-- When **reads dominate** and joins are slow — analytics dashboards, feed pages. You **duplicate data on purpose** for speed.
-- Example: store `likes_count` directly on a `posts` table instead of counting the `likes` table every time.
-- Trade-off: faster reads, but you must keep duplicated data in sync on writes.
+**3. Delete anomaly** — delete one thing, lose another by accident.
+```
+Ansh drops his only course (Math):
+DELETE WHERE student_id=2 AND course='Math'
+→ Ansh disappears from the DB entirely! 💀
+```
 
-### Q6. What's a functional dependency?
-- `A → B` means if you know A, you know B. Example: `student_id → student_name`. Normalization is built on analyzing these.
+**Fix — split into 3 tables** (M-to-M relationship needs a **junction table**):
+```
+students:                courses:                       enrollments:
+id | name  | email       id | name    | credits        student_id | course_id
+1  | Sara  | sara@x.com  10 | Math    | 3              1          | 10
+2  | Ansh  | ansh@x.com  11 | Physics | 4              1          | 11
+                         12 | Chem    | 3              1          | 12
+                                                       2          | 10
+```
+Now:
+- Student data in **one** place → no update anomaly for email.
+- Course data in **one** place → rename "Math" → "Mathematics" = edit one row.
+- Can add Karim to `students` with no enrollment → no insert anomaly.
+- Delete an enrollment → student and course still exist → no delete anomaly.
 
+**`enrollments`** is a **junction table** — the standard way to model a many-to-many relationship.
+
+### Q3. Normal Forms — one-liners + tiny examples
+
+- **1NF** — atomic values (no multi-values in one cell).
+  ```
+  ❌ courses = "Math, Physics"       ✅ one row per course
+  ```
+
+- **2NF** — 1NF + no **partial dependency** on a composite PK.
+  ```
+  PK = (student_id, course)
+  ❌ student_name in this table → depends only on student_id (not the whole PK)
+  ✅ move student_name to its own students table
+  ```
+
+- **3NF** — 2NF + no **transitive dependency** (non-key → non-key).
+  ```
+  ❌ students(student_id, dept, dept_head)
+     dept_head depends on dept (a non-key), not directly on student_id
+  ✅ split into students(student_id, dept) + departments(dept, dept_head)
+  ```
+
+- **BCNF** — stricter 3NF: every **determinant must be a super key**.
+  ```
+  ❌ class(student, subject, teacher)  — teacher → subject, but teacher isn't a super key
+  ✅ split: teaches(teacher, subject) + enrolled(student, teacher)
+  ```
+
+> Memory line: *"the key, the whole key, and nothing but the key."*
+> **3NF is the practical target.** BCNF is rare/textbook.
+
+---
+
+### Q4. When would you denormalize? ⭐
+- When **reads dominate** and joins are slow — dashboards, feed pages, analytics.
+- **Duplicate data on purpose** for speed. Trade-off: faster reads, must keep the duplicate in sync on writes.
+- Example: store `likes_count` on `posts` instead of `COUNT(*)` from `likes` every read.
 ---
 
 # TOPIC 6 — OLTP vs OLAP
