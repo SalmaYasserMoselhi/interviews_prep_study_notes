@@ -1651,3 +1651,162 @@ Three approaches:
 > "**Caching** stores hot data in memory (Redis) to skip slow DB reads. **Cache-aside** is the most common — check cache, on miss go to DB and cache the result. The hard part is **invalidation** — either TTL or delete-on-write. Not useful for write-heavy or real-time data."
 
 ---
+
+## 19. Scaling, Replication, Partitioning, Sharding
+
+Four related concepts that all try to answer: **"one DB isn't enough — what do we do?"**
+
+### The Big Picture
+
+```
+Problem: one DB can't handle the load
+     │
+     ▼
+Solution 1: SCALING (the goal)
+     ├── Vertical (bigger machine)   ← simple, limited
+     └── Horizontal (more machines)  ← complex, unlimited
+                    │
+                    ▼
+     ┌──────────────┴──────────────┐
+     ▼                             ▼
+REPLICATION                    PARTITIONING
+"copies of same data"          "split the data"
+     │                             │
+     ├── Master-Slave              ├── Vertical (by columns)
+     └── Master-Master             └── Horizontal (by rows)
+                                        │
+                                        ▼
+                                    SHARDING
+                                    (horizontal partitioning
+                                     across separate servers)
+```
+
+---
+
+### Scaling — Vertical vs Horizontal
+
+| | Vertical (Scale Up) | Horizontal (Scale Out) |
+|--|---------------------|------------------------|
+| **How** | Bigger machine (more CPU/RAM) | More machines |
+| **Cost** | Expensive | Cheap (commodity) |
+| **Limit** | Hardware ceiling | Practically unlimited |
+| **Fault tolerance** | ✗ Single point of failure | ✓ Others survive |
+| **Complexity** | Simple, no code changes | Complex (distribution, sync) |
+
+**Rule:** Start vertical (simple). Switch to horizontal when needed.
+
+---
+
+### Replication — Copies of the Same Data
+
+**Every server has a FULL copy of the data.**
+
+**Master-Slave (Primary-Replica):**
+```
+                ┌──────────┐
+   WRITE ─────▶│  MASTER  │  (all writes here)
+                └────┬─────┘
+                     │  replicates changes
+          ┌──────────┼──────────┐
+          ▼          ▼          ▼
+    ┌─────────┐┌─────────┐┌─────────┐
+    │ Slave 1 ││ Slave 2 ││ Slave 3 │  (all reads here)
+    └─────────┘└─────────┘└─────────┘
+```
+
+**Purpose:**
+1. **Read scaling** — many reads? add slaves
+2. **High Availability** — master down? promote a slave
+3. **Backup** — every slave is a live backup
+4. **Geographic distribution** — master in US, slave in Egypt → Egyptian users read locally (faster)
+
+**Problem: Replication Lag** — master writes → slaves lag slightly behind. Read right after write → might see old data. Fix: read-after-write from master, or accept eventual consistency.
+
+**Master-Master** — both accept writes. Enables **write scaling** but risks **conflicts** if same row updated on both.
+
+---
+
+### Partitioning — Split the Data
+
+**Each partition holds a PIECE of the data (not the full copy).**
+
+**Vertical Partitioning — split by columns:**
+```
+users table:
+┌────┬──────┬───────┬─────────┬─────────────┐
+│ id │ name │ email │ address │ profile_pic │
+└────┴──────┴───────┴─────────┴─────────────┘
+
+Split into 2 tables:
+┌────┬──────┬───────┐    ┌────┬─────────┬─────────────┐
+│ id │ name │ email │    │ id │ address │ profile_pic │
+└────┴──────┴───────┘    └────┴─────────┴─────────────┘
+  hot (read often)          cold (read rarely)
+```
+
+**Horizontal Partitioning — split by rows:**
+```
+users table (10M rows) split by id range:
+┌─────────────┐  ┌───────────────┐  ┌────────────────┐
+│ Rows 1-3M   │  │ Rows 3M-6M    │  │ Rows 6M-10M    │
+│ Partition A │  │ Partition B   │  │ Partition C    │
+└─────────────┘  └───────────────┘  └────────────────┘
+```
+Same schema, different rows. Queries hit one partition → faster.
+
+---
+
+### Sharding — Horizontal Partitioning Across Servers
+
+**Same idea as horizontal partitioning, but each shard lives on a separate machine.**
+
+```
+                    Application
+                         │
+                ┌────────┼────────┐
+                ▼        ▼        ▼
+          ┌─────────┐┌─────────┐┌─────────┐
+          │ Shard 1 ││ Shard 2 ││ Shard 3 │
+          │Users 1-1M││Users 1M-2M││Users 2M-3M│
+          └─────────┘└─────────┘└─────────┘
+```
+
+**Purpose:** solves **write scaling** and **storage limits** (replication only solves reads).
+
+**Shard Strategies (quick):**
+- **Range-based** — split by id ranges. Simple but risks **hot spots** (new users all on last shard).
+- **Hash-based** — `shard = hash(id) % N`. Even distribution. Rebalancing is painful when N changes.
+- **Consistent hashing** — like hash-based but rebalancing moves only a small fraction of data. Cassandra, DynamoDB use it.
+
+**Sharding Pain Points:**
+- Cross-shard queries are slow (must query all shards, aggregate)
+- Joins across shards = hard
+- Transactions across shards = hard
+- Only shard when you must — it adds a lot of complexity
+
+---
+
+### When to Use What?
+
+| Problem | Solution |
+|---------|----------|
+| Reads slow | **Replication (Master-Slave)** |
+| Writes slow | **Sharding** |
+| Table too big to query fast | **Partitioning** |
+| Need high availability (99.99%) | **Replication (auto-failover)** |
+| Storage running out | **Sharding** |
+| Global users, latency | **Geo-replicated Master-Slave** |
+
+### Differences at a Glance
+
+| | Replication | Partitioning | Sharding |
+|--|-------------|--------------|----------|
+| **What** | Full copies | Pieces | Pieces across servers |
+| **Purpose** | Read scaling, HA | Query speed | Write scaling, storage |
+| **Data location** | Full copy on each | Pieces in one DB | Pieces on separate DBs |
+
+### Interview One-Liner
+
+> "**Scaling** — horizontal beats vertical at scale. **Replication** copies the same data across servers → solves **read scaling** and **HA**. **Partitioning** splits data into pieces → makes queries faster. **Sharding** = horizontal partitioning across separate servers → solves **write scaling** and **storage**. Real systems combine all three: sharded DBs with each shard replicated for HA."
+
+---
