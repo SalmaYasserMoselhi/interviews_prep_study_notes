@@ -1229,10 +1229,10 @@ This example uses everything from Group 2: WebSocket, Pub/Sub, Kafka, DB, Push N
 └──────┬───────────────────▲─────────────┘
        │                   │
        ▼                   │
-┌────────────┐      ┌────────────┐
-│  Chat      │      │  Chat      │
-│  Server 1  │◄────►│  Server 2  │
-│  (Salma)   │Redis │  (Ahmed)   │
+┌────────────┐       ┌────────────┐
+│  Chat      │       │  Chat      │
+│  Server 1  │◄────► │  Server 2  │
+│  (Salma)   │Redis  │  (Ahmed)   │
 └─────┬──────┘Pub/Sub└─────┬──────┘
       │                    │
       ▼                    ▼
@@ -1242,10 +1242,10 @@ This example uses everything from Group 2: WebSocket, Pub/Sub, Kafka, DB, Push N
                │
       ┌────────┼────────┐
       ▼        ▼        ▼
-┌────────┐┌────────┐┌────────┐
-│Cassandra││Push    ││S3      │
-│(Messages)││(FCM/APNs)│(Media) │
-└────────┘└────────┘└────────┘
+┌──────────┐┌──────────┐┌────────┐
+│Cassandra ││Push      ││S3      │
+│(Messages)││(FCM/APNs)│(Media)  │
+└──────────┘└──────────┘└────────┘
 ```
 
 ### Complete Message Flow — Salma sends "Hey!" to Ahmed
@@ -1477,5 +1477,177 @@ Retry with the **same key** N times → charged **once**, returns same response 
 12. What is rate limiting and why is it important?
 13. How does GraphQL handle real-time data?
 15. What is a Dead Letter Queue?
+
+---
+
+# GROUP 3 — Data Storage
+
+Databases handle persistence. This group focuses on the **system-design layer** — caching, CDN, replication, sharding. Core DB concepts (SQL vs NoSQL, ACID, CAP, isolation, normalization) are covered separately in `Databases/Part_A_DBMS_Fundamentals_QA.md`.
+
+---
+
+## 18. Caching
+
+**What it is:** storing frequently-accessed data in fast memory (e.g. Redis) instead of hitting the DB every time.
+
+**Why:**
+- DB read = ~20ms
+- Cache read = ~0.5ms
+- **~40x faster** + reduces DB load
+
+### How it works — Cache-Aside (most common)
+
+```
+Client → App → Cache?
+                ├── HIT  → return 🚀
+                └── MISS → DB → store in cache → return
+```
+
+### The 4 Strategies
+
+| Strategy | Idea |
+|----------|------|
+| **Cache-Aside** | App controls it. Miss → DB → cache. Most common |
+| **Write-Through** | Write hits cache + DB together |
+| **Write-Back** | Write to cache, DB updated later async (fast but risky) |
+| **Write-Around** | Write goes to DB directly, skip cache |
+
+### Redis Code Examples (Node.js)
+
+**Setup:**
+```javascript
+const redis = require('redis');
+const client = redis.createClient({ url: 'redis://localhost:6379' });
+await client.connect();
+```
+
+**1. Cache-Aside (most common)**
+```javascript
+async function getUser(id) {
+  // 1. Check cache
+  const cached = await client.get(`user:${id}`);
+  if (cached) return JSON.parse(cached);   // HIT
+
+  // 2. Miss → fetch from DB
+  const user = await db.users.findById(id);
+
+  // 3. Store in cache with 1 hour TTL
+  await client.setEx(`user:${id}`, 3600, JSON.stringify(user));
+
+  return user;
+}
+
+async function updateUser(id, data) {
+  await db.users.update(id, data);
+  await client.del(`user:${id}`);   // invalidate — next read fetches fresh
+}
+```
+
+**2. Write-Through**
+```javascript
+async function updateUser(id, data) {
+  const user = await db.users.update(id, data);
+  // Update cache with the same data (not delete!)
+  await client.setEx(`user:${id}`, 3600, JSON.stringify(user));
+  return user;
+}
+
+async function getUser(id) {
+  const cached = await client.get(`user:${id}`);
+  if (cached) return JSON.parse(cached);   // usually HIT after any write
+  
+  // Still need cache-aside fallback for reads that never triggered a write
+  const user = await db.users.findById(id);
+  await client.setEx(`user:${id}`, 3600, JSON.stringify(user));
+  return user;
+}
+```
+
+**3. Write-Back (risky — for non-critical data like counters)**
+```javascript
+async function incrementViewCount(postId) {
+  // Fast: just update cache
+  await client.incr(`views:${postId}`);
+  // DB is updated later by background job
+}
+
+// Background job runs every 30 seconds
+setInterval(async () => {
+  const keys = await client.keys('views:*');
+  for (const key of keys) {
+    const count = await client.get(key);
+    const postId = key.split(':')[1];
+    await db.posts.updateViewCount(postId, count);
+  }
+}, 30000);
+```
+
+**4. Write-Around**
+```javascript
+async function createLog(logData) {
+  // Write directly to DB, skip cache entirely
+  await db.logs.insert(logData);
+  // Cache stays untouched — logs rarely re-read
+}
+
+async function getLog(id) {
+  // Reads still use cache-aside pattern
+  const cached = await client.get(`log:${id}`);
+  if (cached) return JSON.parse(cached);
+  
+  const log = await db.logs.findById(id);
+  await client.setEx(`log:${id}`, 3600, JSON.stringify(log));
+  return log;
+}
+```
+
+**Useful Redis Commands:**
+```javascript
+await client.set('key', 'value');                    // SET
+await client.setEx('key', 3600, 'value');            // SET with TTL (1 hour)
+await client.get('key');                             // GET
+await client.del('key');                             // DELETE
+await client.exists('key');                          // 0 or 1
+await client.expire('key', 3600);                    // set TTL later
+await client.ttl('key');                             // remaining TTL in seconds
+
+// Counters (atomic)
+await client.incr('counter');                        // +1
+await client.decr('counter');                        // -1
+await client.incrBy('counter', 5);                   // +5
+
+// Hash (like a small object)
+await client.hSet('user:123', { name: 'Salma', age: 25 });
+await client.hGet('user:123', 'name');               // 'Salma'
+await client.hGetAll('user:123');                    // full object
+
+// List (queue)
+await client.lPush('queue', 'task1');                // push to head
+await client.rPop('queue');                          // pop from tail (FIFO)
+
+// Set (unique values)
+await client.sAdd('tags', 'javascript');
+await client.sMembers('tags');                       // all members
+```
+
+### The Hardest Problem: Invalidation
+
+**"When data changes, how does the cache know to update?"**
+
+Three approaches:
+1. **TTL** — auto-expire after X seconds
+2. **Delete on write** — after update, remove from cache
+3. **Write-through** — always fresh
+
+### When Caching is NOT Useful
+
+- **Write-heavy data** (written more than read)
+- **Real-time data** (stock prices — always want latest)
+- **Unique per-user data that's rarely re-read**
+- **Sensitive data** (passwords — **never cache**)
+
+### Interview One-Liner
+
+> "**Caching** stores hot data in memory (Redis) to skip slow DB reads. **Cache-aside** is the most common — check cache, on miss go to DB and cache the result. The hard part is **invalidation** — either TTL or delete-on-write. Not useful for write-heavy or real-time data."
 
 ---
