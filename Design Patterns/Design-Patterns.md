@@ -324,11 +324,181 @@ Pizza p = new Pizza.Builder("thin", "tomato")
 
 ---
 
+# STRUCTURAL
+
+> **Structural patterns** focus on **how to compose objects** — connecting pieces together so they work as a larger structure, without changing the pieces themselves.
+
+## 4. Adapter
+
+**Problem:** you have a class (or library) whose **interface is incompatible** with your code. You can't edit it (third-party or legacy).
+
+**Idea:** a wrapper class in the middle that **translates** between the two interfaces. Like a phone charger adapter — doesn't change the socket or the phone, just connects them.
+
+**Where used:** third-party SDK integration, legacy system wrapping, API format conversion, `Arrays.asList()` in Java (adapts array → List interface).
+
+### Code (payment example)
+
+```java
+// Your code expects this interface
+interface PaymentProcessor {
+    void pay(double amount);
+}
+
+// Third-party SDK — you CAN'T edit this
+class StripeAPI {
+    void makePayment(int amountInCents) { /* Stripe logic */ }
+}
+
+// Adapter — translates your interface → Stripe's interface
+class StripeAdapter implements PaymentProcessor {
+    private StripeAPI stripe;
+
+    public StripeAdapter(StripeAPI stripe) {
+        this.stripe = stripe;
+    }
+
+    public void pay(double amount) {
+        int cents = (int)(amount * 100);    // convert dollars → cents
+        stripe.makePayment(cents);           // delegate to Stripe
+    }
+}
+
+// usage — your code sees PaymentProcessor, doesn't know Stripe exists
+PaymentProcessor processor = new StripeAdapter(new StripeAPI());
+processor.pay(29.99);
+```
+
+### The analogy
+
+```
+Your Phone (USB-C) ──► Adapter ──► Wall Socket (220V)
+Your Code (pay())  ──► StripeAdapter ──► StripeAPI (makePayment())
+```
+
+Adapter **doesn't change** either side — just **translates** between them.
+
+### SOLID keywords it satisfies
+- **OCP** ⭐ — new payment provider = new Adapter class. Your code **never touched**.
+- **DIP** — your code depends on `PaymentProcessor` interface, not Stripe directly.
+- **SRP** — Adapter's only job is **translation**.
+
+### Interview answer
+
+"**Adapter** solves the problem of having an **incompatible interface** — typically a third-party library or legacy class whose methods don't match what your code expects.
+
+Example: my code uses `PaymentProcessor.pay(double)`, but Stripe SDK has `makePayment(int cents)`. I can't edit Stripe. So I create `StripeAdapter implements PaymentProcessor` — inside `pay()` it converts dollars to cents and delegates to `stripe.makePayment()`.
+
+New provider? **New adapter class. My code never changes** — it only knows the `PaymentProcessor` interface."
+
+---
+
+## 5. Decorator
+
+**Problem:** you need to **add behavior** to an object **at runtime** without modifying its class. Inheritance can't do this — it's fixed at compile time, and combining multiple extensions causes a **class explosion** (e.g. `MilkCoffee`, `SugarCoffee`, `MilkSugarCoffee`, `MilkSugarWhipCoffee`...).
+
+**Idea:** wrap the object in another object that **adds behavior before/after** delegating to the original. Decorators implement the **same interface** as the wrapped object, so they're stackable — like layers.
+
+**Where used:** Java I/O streams (`BufferedReader(new FileReader(...))`), middleware chains, logging/auth wrappers, UI component styling.
+
+### Code (coffee shop example)
+
+```java
+// 1. Base interface
+interface Coffee {
+    double cost();
+    String description();
+}
+
+// 2. Concrete base
+class SimpleCoffee implements Coffee {
+    public double cost() { return 5.0; }
+    public String description() { return "Simple coffee"; }
+}
+
+// 3. Base decorator — implements same interface + wraps a Coffee
+abstract class CoffeeDecorator implements Coffee {
+    protected Coffee wrapped;
+    public CoffeeDecorator(Coffee wrapped) { this.wrapped = wrapped; }
+}
+
+// 4. Concrete decorators — each adds one thing
+class MilkDecorator extends CoffeeDecorator {
+    public MilkDecorator(Coffee wrapped) { super(wrapped); }
+    public double cost() { return wrapped.cost() + 2.0; }
+    public String description() { return wrapped.description() + " + milk"; }
+}
+
+class SugarDecorator extends CoffeeDecorator {
+    public SugarDecorator(Coffee wrapped) { super(wrapped); }
+    public double cost() { return wrapped.cost() + 1.0; }
+    public String description() { return wrapped.description() + " + sugar"; }
+}
+
+class WhipDecorator extends CoffeeDecorator {
+    public WhipDecorator(Coffee wrapped) { super(wrapped); }
+    public double cost() { return wrapped.cost() + 3.0; }
+    public String description() { return wrapped.description() + " + whip"; }
+}
+
+// usage — stack like layers
+Coffee order = new SimpleCoffee();                    // 5.0
+order = new MilkDecorator(order);                     // 7.0
+order = new SugarDecorator(order);                    // 8.0
+order = new WhipDecorator(order);                     // 11.0
+System.out.println(order.description());  // "Simple coffee + milk + sugar + whip"
+System.out.println(order.cost());         // 11.0
+```
+
+### Why not inheritance?
+
+```
+Inheritance → class explosion:
+  MilkCoffee, SugarCoffee, MilkSugarCoffee,
+  MilkWhipCoffee, SugarWhipCoffee, MilkSugarWhipCoffee...
+  3 add-ons = 7 subclasses. 10 add-ons = 1023 subclasses!
+
+Decorator → just 3 classes. Combine freely at runtime.
+```
+
+### Java I/O — the classic real-world example
+
+```java
+// each layer adds behavior: file reading → buffering → line counting
+new LineNumberReader(           // adds line counting
+    new BufferedReader(         // adds buffering
+        new FileReader("f.txt") // base: reads file
+    )
+)
+```
+
+### SOLID keywords it satisfies
+- **OCP** ⭐ — new behavior = new decorator class. Existing classes **never touched**.
+- **SRP** — each decorator adds **one responsibility**.
+- **DIP** — decorators depend on the `Coffee` interface, not concrete classes.
+
+### Decorator vs Adapter
+
+| | Decorator | Adapter |
+|--|-----------|---------|
+| **Purpose** | **add behavior** to existing interface | **convert** one interface to another |
+| **Interface** | same as wrapped object | different from wrapped object |
+| **Stackable** | yes — multiple layers | usually single wrapper |
+
+### Interview answer
+
+"**Decorator** solves the problem of needing to **add behavior at runtime** without modifying the original class. Instead of inheritance (which causes **class explosion** with combinations), I wrap the object in a decorator that implements the **same interface** and adds behavior before/after delegating.
+
+Example: `SimpleCoffee` costs 5. Wrap it in `MilkDecorator` → 7. Wrap that in `SugarDecorator` → 8. **Stackable layers**, any combination, no new subclass needed.
+
+Real-world: Java I/O — `BufferedReader(new FileReader(...))` — each wrapper adds one capability. New behavior? **New decorator class. Existing code untouched** — classic OCP."
+
+---
+
 # BEHAVIORAL
 
 > **Behavioral patterns** focus on **how objects behave and communicate** — which algorithm to use, how they notify each other, how to distribute responsibilities. (Creational = how to make. Structural = how to compose. Behavioral = how they talk / act.)
 
-## 4. Strategy
+## 5. Strategy
 
 **Problem:** class has **multiple algorithms** to do the same thing, and the choice happens at **runtime**. Putting them all inside one class with `if/else` breaks **SRP + OCP**.
 
@@ -387,5 +557,110 @@ They **complement** each other — a Factory can create the Strategy and inject 
 "الـ **Strategy** بيحل مشكلة إن class فيه **كذا algorithm** لعمل نفس الحاجة، والاختيار في الـ **runtime**. بدل ما أعمل `if/else` كبير جوّه الـ class (**كسر SRP + OCP**)، بحط كل algorithm في **class مستقل بيـ implement نفس الـ interface**، والـ context بيعتمد على الـ interface ويقدر يبدّل بينهم في الـ runtime.
 
 مثال: `ShippingCalculator` عنده Standard, Express, SameDay strategies. algorithm جديد؟ **class جديد بس، الـ Calculator ما بيتلمسش**. ده **التطبيق الكلاسيكي لـ Open/Closed**."
+
+---
+
+## 6. Observer
+
+**Problem:** an object (Subject) needs to **notify multiple other objects** when its state changes, without knowing them by name or hardcoding them — because hardcoding breaks **OCP + SRP + DIP**.
+
+**Idea:** Subject keeps a `List<Observer>`. When state changes → loops through and calls `update()` on each one. Observers subscribe/unsubscribe from outside — **zero code changes** in Subject.
+
+**Where used:** event systems, UI listeners (button click → multiple handlers), notifications (YouTube channel → subscribers), message brokers, reactive programming (RxJava).
+
+### Code (YouTube channel example)
+
+```java
+// 1. Observer interface
+interface Observer {
+    void update(String videoTitle);
+}
+
+// 2. Concrete observers — each reacts differently
+class User implements Observer {
+    private String name;
+    public User(String name) { this.name = name; }
+    public void update(String videoTitle) {
+        System.out.println(name + " got notified: " + videoTitle);
+    }
+}
+
+class EmailService implements Observer {
+    public void update(String videoTitle) {
+        System.out.println("Sending email about: " + videoTitle);
+    }
+}
+
+class Analytics implements Observer {
+    public void update(String videoTitle) {
+        System.out.println("Logging stats for: " + videoTitle);
+    }
+}
+
+// 3. Subject — manages observer list + notifies
+class Channel {
+    private String name;
+    private List<Observer> subscribers = new ArrayList<>();
+
+    public Channel(String name) { this.name = name; }
+
+    public void subscribe(Observer o)   { subscribers.add(o); }
+    public void unsubscribe(Observer o) { subscribers.remove(o); }
+
+    private void notifyAll(String videoTitle) {
+        for (Observer o : subscribers) {
+            o.update(videoTitle);
+        }
+    }
+
+    public void uploadVideo(String title) {
+        System.out.println(name + " uploaded: " + title);
+        notifyAll(title);   // state changed → notify everyone
+    }
+}
+
+// usage
+Channel ch = new Channel("MO");
+ch.subscribe(new User("Ahmed"));
+ch.subscribe(new User("Sara"));
+ch.subscribe(new EmailService());
+ch.subscribe(new Analytics());
+
+ch.uploadVideo("Observer Pattern");
+// Ahmed got notified, Sara got notified, email sent, stats logged
+// Channel doesn't know WHO they are or WHAT they do
+```
+
+### Push vs Pull
+
+| | Push | Pull |
+|--|------|------|
+| **Subject sends** | all data in `update(title, desc, length)` | reference to itself `update(channel)` |
+| **Observer gets** | everything — even if not needed | only what it asks for via `ch.getTitle()` |
+| **Coupling** | higher | lower |
+
+**In practice:** most implementations are hybrid — push the most important data + pass a reference for pulling the rest.
+
+### SOLID keywords it satisfies
+- **OCP** ⭐ — new observer = new class + `subscribe()`. Subject **never touched**.
+- **SRP** — Subject manages state + notify. Each observer handles one reaction.
+- **DIP** — Subject knows `Observer` interface only, not concrete classes.
+
+### Strategy vs Observer
+
+| | Strategy | Observer |
+|--|----------|----------|
+| **Solves** | choosing an algorithm from multiple options | notifying multiple objects when something happens |
+| **Relationship** | Context ↔ **one** strategy | Subject ↔ **many** observers |
+| **At runtime** | swaps algorithm | adds/removes observers |
+| **Example** | Shipping calculator | YouTube notifications |
+
+### Interview answer
+
+"**Observer** solves the problem of an object (Subject) needing to **notify multiple other objects** when its state changes, **without knowing them by name**.
+
+Example: a YouTube Channel uploads a video and needs to notify all subscribers — users, email service, analytics. Instead of hardcoding each one inside `uploadVideo()` (**breaks OCP + SRP**), the Channel keeps a **`List<Observer>`** and does a **loop + `update()`** on each one.
+
+New observer? **New class implementing Observer + `subscribe()`**. The Channel is **never touched**."
 
 ---
